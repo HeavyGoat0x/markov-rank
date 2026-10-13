@@ -1,0 +1,11 @@
+[package]
+name = "pagerank"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+markov = { path = "../markov" }
+mtx = { path = "../mtx" }
+
+[lints]
+workspace = true
