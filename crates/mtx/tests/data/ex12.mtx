@@ -1,0 +1,10 @@
+%%MatrixMarket matrix coordinate real general
+% TD 1, exercice 1.2 : matrice de transition 3 x 3.
+3 3 7
+1 2 0.6
+1 3 0.4
+2 1 0.2
+2 2 0.8
+3 1 0.3
+3 2 0.2
+3 3 0.5
