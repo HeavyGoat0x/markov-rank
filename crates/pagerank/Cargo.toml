@@ -6,6 +6,10 @@ edition.workspace = true
 [dependencies]
 markov = { path = "../markov" }
 mtx = { path = "../mtx" }
+thiserror = "2.0.21"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+proptest = "1.12.0"

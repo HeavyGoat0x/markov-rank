@@ -14,13 +14,19 @@ pub use sparse::CsrMatrix;
 pub const EPS: f64 = 1e-9;
 
 /// Erreurs possibles à la construction d'une matrice.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `thiserror::Error` implémente `Display` et `std::error::Error` à partir des `#[error]` :
+/// d'autres crates (comme `pagerank`) peuvent ainsi l'englober avec `#[from]`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MatrixError {
     /// Aucune ligne fournie.
+    #[error("matrice vide")]
     Empty,
     /// Une ligne n'a pas autant d'éléments qu'il y a de lignes.
+    #[error("la matrice n'est pas carrée")]
     NotSquare,
     /// Un indice `(row, col)` sort de la matrice.
+    #[error("indice ({row}, {col}) hors de la matrice")]
     OutOfBounds { row: usize, col: usize },
 }
 

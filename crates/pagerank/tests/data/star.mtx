@@ -1,0 +1,9 @@
+%%MatrixMarket matrix coordinate pattern general
+% Petit web : les pages 1 à 4 pointent toutes vers la page 5, qui pointe vers 1.
+% La page 5 (indice 4) doit avoir le plus grand PageRank.
+5 5 5
+1 5
+2 5
+3 5
+4 5
+5 1
