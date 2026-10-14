@@ -2,8 +2,13 @@
 //!
 //! Une distribution est un `Vec<f64>` (vecteur ligne), une matrice de
 //! transition est une [`DenseMatrix`]. L'évolution s'écrit `π(n+1) = π(n) · P`.
+//!
+//! Pour les grandes matrices presque vides (graphes du web), voir [`CsrMatrix`].
 
 use std::fmt;
+
+pub mod sparse;
+pub use sparse::CsrMatrix;
 
 /// Tolérance utilisée pour comparer des flottants (sommes égales à 1, etc.).
 pub const EPS: f64 = 1e-9;
@@ -15,6 +20,8 @@ pub enum MatrixError {
     Empty,
     /// Une ligne n'a pas autant d'éléments qu'il y a de lignes.
     NotSquare,
+    /// Un indice `(row, col)` sort de la matrice.
+    OutOfBounds { row: usize, col: usize },
 }
 
 /// Matrice carrée `n × n` stockée ligne par ligne dans un seul `Vec`
