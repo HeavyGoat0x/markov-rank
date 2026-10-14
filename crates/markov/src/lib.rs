@@ -7,6 +7,7 @@
 
 use std::fmt;
 
+mod parallel; // phase 5 : CsrMatrix::mul_vec et par_mul_vec
 pub mod sparse;
 pub use sparse::CsrMatrix;
 

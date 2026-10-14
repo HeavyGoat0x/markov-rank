@@ -15,6 +15,7 @@
 //!
 //! Coût O(nnz) par itération grâce à [`CsrMatrix::vec_mul`].
 
+pub mod fast; // phase 5 : PageRank parallèle, top-k rapide
 pub mod perturb; // phase 4 : modifications du graphe et expérience du TD 2
 pub mod ranking; // phase 4 : meilleures pages
 
