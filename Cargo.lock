@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "markov"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "markov-rank"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mtx",
  "pagerank",
@@ -16,14 +16,14 @@ dependencies = [
 
 [[package]]
 name = "mtx"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "pagerank"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "markov",
  "mtx",
