@@ -38,7 +38,7 @@ impl CsrMatrix {
     pub fn from_triplets(
         n_rows: usize,
         n_cols: usize,
-        triplets: Vec<(usize, usize, f64)>,
+        mut triplets: Vec<(usize, usize, f64)>,
     ) -> Result<Self, MatrixError> {
         // Étapes :
         // 1) vérifier les indices ;
@@ -48,17 +48,77 @@ impl CsrMatrix {
         //    dans la dernière case de `values` ; sinon pousser dans `col_idx` et `values`
         //    et compter une entrée de plus pour la ligne i ;
         // 4) `row_ptr` = sommes cumulées des nombres d'entrées par ligne.
-        todo!()
+        // 1) Indices : on refuse AVANT de trier, inutile de trier des données invalides.
+        for &(i, j, _) in &triplets {
+            if i >= n_rows || j >= n_cols {
+                return Err(MatrixError::OutOfBounds { row: i, col: j });
+            }
+        }
+
+        // 2) Tri sur place (on possède `triplets`, aucune copie).
+        triplets.sort_unstable_by_key(|&(i, j, _)| (i, j));
+
+        let mut row_ptr: Vec<usize> = Vec::with_capacity(n_rows + 1);
+        row_ptr.push(0);
+        let mut col_idx: Vec<usize> = Vec::with_capacity(triplets.len());
+        let mut values: Vec<f64> = Vec::with_capacity(triplets.len());
+        let mut prev: Option<(usize, usize)> = None;
+
+        for (i, j, value) in triplets {
+            // 3) Doublon (même position que le précédent, ils sont côte à côte après le tri) :
+            //    on additionne dans la dernière case, et on NE stocke PAS une deuxième fois.
+            if prev == Some((i, j)) {
+                if let Some(last) = values.last_mut() {
+                    *last += value;
+                }
+                continue;
+            }
+            prev = Some((i, j));
+
+            // 4) Fermer toutes les lignes avant i (y compris les vides) AVANT de stocker :
+            //    `row_ptr.len() - 1` = nombre de lignes déjà fermées.
+            while row_ptr.len() <= i {
+                row_ptr.push(values.len());
+            }
+            col_idx.push(j);
+            values.push(value);
+        }
+
+        // 5) Fermer la dernière ligne et les éventuelles lignes vides de la fin.
+        while row_ptr.len() <= n_rows {
+            row_ptr.push(values.len());
+        }
+
+        Ok(CsrMatrix {
+            n_rows,
+            n_cols,
+            row_ptr,
+            col_idx,
+            values,
+        })
     }
 
     /// Convertit une matrice dense, en ignorant les zéros.
+    ///
+    /// # Panics
+    /// Jamais en pratique : les indices viennent de `m`, ils sont valides par construction.
     #[must_use]
     pub fn from_dense(m: &DenseMatrix) -> Self {
-        // Indice : construis les triplets des coefficients non nuls puis appelle `from_triplets`.
-        // Elle renvoie un `Result`, mais ici les indices sont valides par construction :
-        // `.expect("indices valides")` est légitime. Clippy demandera alors une section
-        // `# Panics` dans la doc, comme pour `get`.
-        todo!()
+        let n = m.size(); // DenseMatrix est carrée : un seul n suffit
+        let mut triplets: Vec<(usize, usize, f64)> = Vec::new();
+
+        for i in 0..n {
+            for j in 0..n {
+                let v = m.get(i, j);
+                if v != 0.0 {
+                    triplets.push((i, j, v)); // on réutilise v au lieu de relire m.get
+                }
+            }
+        }
+
+        // `from_triplets` renvoie un `Result`, mais les indices viennent de `m` :
+        // l'erreur est impossible. Le message d'`expect` dit ce qu'on SUPPOSE vrai.
+        Self::from_triplets(n, n, triplets).expect("indices valides par construction")
     }
 
     /// Convertit en matrice dense (utile pour les tests sur de petites matrices).
@@ -67,7 +127,23 @@ impl CsrMatrix {
     /// Si la matrice n'est pas carrée ([`DenseMatrix`] est toujours carrée).
     #[must_use]
     pub fn to_dense(&self) -> DenseMatrix {
-        todo!()
+        assert_eq!(self.n_rows, self.n_cols, "DenseMatrix doit être carrée");
+        let n = self.n_rows;
+        let mut data = vec![0.0; n * n];
+
+        for i in 0..n {
+            // Les entrées de la ligne i sont aux positions k = row_ptr[i] .. row_ptr[i + 1]
+            // de `col_idx` et `values` : on y accède directement par l'indice k,
+            // sans itérateur, donc sans `Option`.
+            for k in self.row_ptr[i]..self.row_ptr[i + 1] {
+                let j = self.col_idx[k];
+                data[i * n + j] = self.values[k]; // élément (i, j), stockage row-major
+            }
+        }
+
+        // `n` et `data` sont privés, mais `sparse` est un sous-module du crate qui définit
+        // `DenseMatrix` : il a le droit de les utiliser.
+        DenseMatrix { n, data }
     }
 
     /// Nombre de lignes.
@@ -95,14 +171,12 @@ impl CsrMatrix {
     /// # Panics
     /// Si `i >= n_rows`.
     pub fn row(&self, i: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
-        // Indice : avec `let range = self.row_ptr[i]..self.row_ptr[i + 1];`,
-        // `self.col_idx[range.clone()].iter().copied()` donne les colonnes ;
-        // `.zip(...)` les associe aux valeurs.
-        //
-        // À REMPLACER : `todo!()` ne marche pas ici, car Rust doit connaître le type concret
-        // de l'itérateur renvoyé. En attendant, on renvoie un itérateur vide.
-        let _ = i;
-        std::iter::empty()
+        // Les entrées de la ligne i occupent les positions row_ptr[i] .. row_ptr[i + 1]
+        // de `col_idx` et `values`. `zip` associe chaque colonne à sa valeur ; les deux
+        // tranches ont la même longueur, donc aucun `None` possible.
+        let range = self.row_ptr[i]..self.row_ptr[i + 1];
+        let cols = self.col_idx[range.clone()].iter().copied();
+        cols.zip(self.values[range].iter().copied())
     }
 
     /// Élément `(i, j)`, `0.0` s'il n'est pas stocké.
@@ -111,18 +185,37 @@ impl CsrMatrix {
     /// Si `i` ou `j` est hors limites.
     #[must_use]
     pub fn get(&self, i: usize, j: usize) -> f64 {
-        // Version simple : parcourir `self.row(i)`.
-        // Version rapide (bonus) : les colonnes étant triées, `binary_search` sur la tranche
-        // `col_idx` de la ligne.
-        todo!()
+        assert!(
+            i < self.n_rows && j < self.n_cols,
+            "élément ({i}, {j}) hors d'une matrice {}×{}",
+            self.n_rows,
+            self.n_cols
+        );
+
+        // Les colonnes d'une ligne sont triées : recherche dichotomique, O(log k).
+        // `binary_search` renvoie `Ok(position)` si `j` est trouvé, `Err(_)` sinon.
+        let range = self.row_ptr[i]..self.row_ptr[i + 1];
+        match self.col_idx[range.clone()].binary_search(&j) {
+            Ok(k) => self.values[range.start + k], // k est relatif au début de la tranche
+            Err(_) => 0.0,                         // non stocké = coefficient nul
+        }
     }
 
-    /// Transposée : l'entrée `(i, j)` devient `(j, i)`.
+    /// Transposée : l'entrée `(i, j)` devient `(j, i)`, une matrice `m × n` devient `n × m`.
+    ///
+    /// # Panics
+    /// Jamais en pratique : les indices inversés d'une matrice valide sont valides.
     #[must_use]
     pub fn transpose(&self) -> Self {
-        // Version simple : construire les triplets inversés et appeler `from_triplets`
-        // (même remarque que `from_dense` pour le `.expect`).
-        todo!()
+        let mut triplets = Vec::with_capacity(self.nnz()); // taille connue : une seule allocation
+        for i in 0..self.n_rows {
+            for (j, v) in self.row(i) {
+                triplets.push((j, i, v));
+            }
+        }
+        // Dimensions échangées : n_cols lignes, n_rows colonnes.
+        Self::from_triplets(self.n_cols, self.n_rows, triplets)
+            .expect("indices transposés valides par construction")
     }
 
     /// Produit vecteur ligne × matrice : `x · A`, le même calcul que `step` en dense.
@@ -136,7 +229,20 @@ impl CsrMatrix {
     pub fn vec_mul(&self, x: &[f64]) -> Vec<f64> {
         // `(x · A)[j] = Σᵢ x[i] · A[i][j]`. En CSR, on parcourt les lignes :
         // pour chaque ligne i et chaque entrée (j, v) de la ligne, `result[j] += x[i] * v`.
-        todo!()
+        assert_eq!(
+            x.len(),
+            self.n_rows,
+            "x doit avoir une valeur par ligne de la matrice"
+        );
+        let mut result: Vec<f64> = vec![0.0; self.n_cols];
+
+        for (i, &xi) in x.iter().enumerate() {
+            for (j, v) in self.row(i) {
+                result[j] += xi * v;
+            }
+        }
+
+        result
     }
 }
 
