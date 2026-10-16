@@ -12,10 +12,17 @@
 //!
 //! Le crate ne dépend pas de `markov` : il renvoie une liste de triplets (format COO)
 //! que l'appelant convertit dans la structure de son choix.
+//!
+//! Il lit aussi le format « liste d'adjacence » des fichiers `.txt` du TD (module
+//! [`adjacency`]) ; [`read_graph_file`] choisit le bon lecteur d'après l'extension.
+
+pub mod adjacency;
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+
+pub use adjacency::{read_adjacency, read_adjacency_file};
 
 /// Type des valeurs stockées.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +102,16 @@ pub enum MtxError {
 
     #[error("{expected} entrées annoncées, {found} lues")]
     WrongCount { expected: usize, found: usize },
+
+    #[error(
+        "ligne {line} : page {page} hors de 1..={pages} (l'en-tête annonce {pages} pages : \
+         est-il juste ?)"
+    )]
+    PageOutOfRange {
+        line: usize,
+        page: usize,
+        pages: usize,
+    },
 }
 
 /// Analyse la première ligne du fichier.
@@ -282,6 +299,28 @@ pub fn read<R: BufRead>(reader: R) -> Result<Coo, MtxError> {
 pub fn read_file<P: AsRef<Path>>(path: P) -> Result<Coo, MtxError> {
     let file = File::open(path)?;
     read(BufReader::new(file))
+}
+
+/// Lit un graphe en choisissant le format d'après l'extension : `.mtx` (Matrix Market) ou
+/// `.txt` (liste d'adjacence du TD, voir [`adjacency`]).
+///
+/// # Errors
+/// Celles de [`read_file`] ou de [`read_adjacency_file`] ;
+/// [`MtxError::Unsupported`] pour une autre extension.
+pub fn read_graph_file<P: AsRef<Path>>(path: P) -> Result<Coo, MtxError> {
+    let path = path.as_ref();
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase);
+    match extension.as_deref() {
+        Some("mtx") => read_file(path),
+        Some("txt") => read_adjacency_file(path),
+        _ => Err(MtxError::Unsupported(format!(
+            "extension de {} (attendu .mtx ou .txt)",
+            path.display()
+        ))),
+    }
 }
 
 #[cfg(test)]

@@ -24,6 +24,14 @@ fn star_graph_ranks_the_hub_first() {
 }
 
 #[test]
+fn txt_and_mtx_give_the_same_transition() {
+    // Le même petit web, dans les deux formats.
+    let from_txt = Transition::from_mtx_file(data("star.txt")).unwrap();
+    let from_mtx = Transition::from_mtx_file(data("star.mtx")).unwrap();
+    assert_eq!(from_txt, from_mtx);
+}
+
+#[test]
 fn rectangular_file_is_rejected() {
     assert!(matches!(
         Transition::from_mtx_file(data("rect.mtx")),

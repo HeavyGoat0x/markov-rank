@@ -10,11 +10,19 @@
 //! Le `--` sépare les options de cargo de celles du programme.
 
 use std::error::Error;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use clap::{Args, Parser, Subcommand};
-use pagerank::Options;
+use pagerank::perturb::{
+    Graph, add_random_links, add_random_nodes, compare_starts, remove_random_links,
+};
+use pagerank::{Options, Transition};
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 
 /// Ligne de commande, décrite par des types : `clap` génère l'analyse des arguments,
 /// les messages d'erreur et `--help` à partir des `///` et des `#[arg]`.
@@ -128,16 +136,53 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
 }
 
 /// Affiche : nombre de pages, nombre de liens, nombre et pourcentage de pages dangling.
+#[allow(clippy::cast_precision_loss)]
 fn cmd_info(file: &Path) -> Result<(), Box<dyn Error>> {
     // `Transition::from_mtx_file(file)?` donne tout : `t.n()`, `t.p.nnz()`, `t.dangling_count()`.
-    todo!()
+    let transition = Transition::from_mtx_file(file)?;
+    let n = transition.n();
+    let nnz = transition.p.nnz();
+    let dangling_count = transition.dangling_count();
+    // Conversion en f64 AVANT la division (sinon division entière : 3 * 100 / 7 = 42).
+    // n > 0 : `from_mtx_file` refuse un graphe vide.
+    let dangling_percent = dangling_count as f64 * 100.0 / n as f64;
+
+    println!("pages    : {n}");
+    println!("liens    : {nnz}");
+    println!("dangling : {dangling_count} ({dangling_percent:.2} %)");
+    Ok(())
 }
 
 /// Calcule PageRank, puis affiche : itérations, résidu, temps (`std::time::Instant`),
 /// et les `top` meilleures pages avec leur score (`pagerank::ranking::top_k`).
 /// Attention : les pages sont numérotées à partir de 1 dans le fichier, 0 dans le code.
 fn cmd_rank(file: &Path, opts: &Options, top: usize) -> Result<(), Box<dyn Error>> {
-    todo!()
+    let t = Transition::from_mtx_file(file)?;
+    let start = Instant::now();
+    let p = pagerank::pagerank(&t, opts)?;
+    // On garde le `Duration` entier : `{:.2?}` choisit l'unité (µs, ms, s).
+    let duration = start.elapsed();
+
+    println!("itérations : {}", p.iterations);
+    println!("résidu     : {:.2e}", p.residual);
+    println!("temps      : {duration:.2?}");
+    if !p.converged {
+        println!(
+            "attention : pas de convergence en {} itérations (augmenter --max-iter ?)",
+            opts.max_iter
+        );
+    }
+
+    println!();
+    println!("top {top} :");
+    let best = pagerank::ranking::top_k(&p.scores, top);
+    for (rank, (page_num, score)) in best.into_iter().enumerate() {
+        // Rang et page numérotés à partir de 1, comme dans le fichier .mtx.
+        let page = page_num + 1;
+        println!("{:>4}. page {page:>8}  {score:.6e}", rank + 1);
+    }
+
+    Ok(())
 }
 
 /// Pour chaque run r (graine `seed + r`) : part de `Graph::from_mtx_file`, applique
@@ -146,7 +191,58 @@ fn cmd_rank(file: &Path, opts: &Options, top: usize) -> Result<(), Box<dyn Error
 /// par run : `run,seed,removed,added,new_nodes,uniform_iterations,warm_iterations`
 /// (`std::fs::File::create` + `writeln!`).
 fn cmd_perturb(args: &PerturbArgs) -> Result<(), Box<dyn Error>> {
-    todo!()
+    let base_graph = Graph::from_mtx_file(&args.file)?;
+    let opts = args.pagerank.options();
+
+    // Le fichier est créé UNE fois, avant la boucle, avec l'en-tête ; chaque run y ajoute
+    // ensuite une ligne. `Option<File>` : `None` si `--csv` n'a pas été donné.
+    let mut csv = match &args.csv {
+        Some(path) => {
+            let mut file = File::create(path)?;
+            writeln!(
+                file,
+                "run,seed,removed,added,new_nodes,uniform_iterations,warm_iterations"
+            )?;
+            Some(file)
+        }
+        None => None,
+    };
+
+    for r in 0..args.runs {
+        // Un générateur neuf par run, graine `seed + r` : chaque run est reproductible seul.
+        let seed = args.seed + r;
+        let mut rng = StdRng::seed_from_u64(seed);
+
+        let after = remove_random_links(&base_graph, args.remove, &mut rng);
+        let after = add_random_links(&after, args.add, &mut rng);
+        let after = add_random_nodes(&after, args.new_nodes, args.links_per_node, &mut rng);
+
+        let comparison = compare_starts(&base_graph, &after, &opts)?;
+
+        println!(
+            "run {r} (graine {seed}) : uniforme {} itérations, warm {} itérations",
+            comparison.uniform_iterations, comparison.warm_iterations
+        );
+
+        // `as_mut()` : emprunte le fichier (`&mut File`) sans le sortir de l'`Option`,
+        // pour pouvoir écrire à chaque tour de boucle.
+        if let Some(file) = csv.as_mut() {
+            writeln!(
+                file,
+                "{r},{seed},{},{},{},{},{}",
+                args.remove,
+                args.add,
+                args.new_nodes,
+                comparison.uniform_iterations,
+                comparison.warm_iterations
+            )?;
+        }
+    }
+
+    if let Some(path) = &args.csv {
+        println!("résultats écrits dans {}", path.display());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

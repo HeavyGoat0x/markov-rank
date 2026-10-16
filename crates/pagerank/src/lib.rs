@@ -81,19 +81,43 @@ impl Transition {
         //    si somme == 0 → dangling[i] = true, sinon pousser (i, j, v / somme) dans des triplets ;
         // 3) `CsrMatrix::from_triplets(n, n, triplets)?` : le `?` convertit `MatrixError`
         //    en `PageRankError::Matrix` grâce à `#[from]`.
-        todo!()
+        let rows = adjacency.n_rows();
+        let cols = adjacency.n_cols();
+        if rows == 0 {
+            return Err(PageRankError::EmptyGraph);
+        }
+        if rows != cols {
+            return Err(PageRankError::NotSquare { rows, cols });
+        }
+        let mut triplets: Vec<(usize, usize, f64)> = Vec::with_capacity(adjacency.nnz());
+        let mut dangling: Vec<bool> = Vec::with_capacity(rows);
+        for i in 0..rows {
+            let somme: f64 = adjacency.row(i).map(|(_, val)| val).sum();
+            if somme > 0.0 {
+                for (col, val) in adjacency.row(i) {
+                    triplets.push((i, col, val / somme));
+                }
+            }
+            dangling.push(somme == 0.0);
+        }
+        let p = CsrMatrix::from_triplets(rows, cols, triplets)?;
+        Ok(Self { p, dangling })
     }
 
     /// Lit un fichier `.mtx` où l'entrée `(i, j)` est un lien de la page `i` vers la page `j`
-    /// (convention des graphes web SNAP de <https://sparse.tamu.edu>).
+    /// (convention des graphes web SNAP de <https://sparse.tamu.edu>), ou un fichier `.txt`
+    /// au format liste d'adjacence du TD (voir [`mtx::read_graph_file`]).
     ///
     /// # Errors
     /// Erreurs de lecture ([`PageRankError::Mtx`]), puis celles de [`Transition::from_adjacency`].
     pub fn from_mtx_file<P: AsRef<Path>>(path: P) -> Result<Self, PageRankError> {
-        // Trois lignes, un `?` chacune : `mtx::read_file`, `CsrMatrix::from_triplets`
+        // Trois lignes, un `?` chacune : `mtx::read_graph_file`, `CsrMatrix::from_triplets`
         // (avec `coo.rows`, `coo.cols`, `coo.entries`), puis `Self::from_adjacency`.
         // Les `?` convertissent `MtxError` et `MatrixError` automatiquement (`#[from]`).
-        todo!()
+        let coo = mtx::read_graph_file(path)?;
+        let adjacency: CsrMatrix = CsrMatrix::from_triplets(coo.rows, coo.cols, coo.entries)?;
+
+        Transition::from_adjacency(&adjacency)
     }
 
     /// Nombre de pages.
@@ -111,12 +135,16 @@ impl Transition {
 
 /// Distribution uniforme sur `n` pages : `[1/n, …, 1/n]` (vide si `n == 0`).
 #[must_use]
+#[allow(clippy::cast_precision_loss)]
 pub fn uniform(n: usize) -> Vec<f64> {
     // Attention : clippy pedantic signale `n as f64` (`cast_precision_loss`) car un `usize`
     // très grand ne tient pas exactement dans un `f64`. Au-delà de 2⁵² pages seulement :
     // ici c'est sans risque, on peut le dire à clippy avec
     // `#[allow(clippy::cast_precision_loss)]` au-dessus de la fonction.
-    todo!()
+    if n == 0 {
+        return Vec::new();
+    }
+    vec![1.0 / (n as f64); n]
 }
 
 /// Distance L1 : `Σ |a[i] − b[i]|`. C'est le critère d'arrêt de PageRank.
@@ -125,7 +153,12 @@ pub fn uniform(n: usize) -> Vec<f64> {
 /// Si `a` et `b` n'ont pas la même taille.
 #[must_use]
 pub fn l1_distance(a: &[f64], b: &[f64]) -> f64 {
-    todo!()
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "Les deux vecteurs n'ont pas la même taille"
+    );
+    a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum()
 }
 
 /// Un pas de la chaîne de Google : renvoie `π·G` sans construire `G`.
@@ -142,7 +175,21 @@ pub fn google_step(pi: &[f64], t: &Transition, alpha: f64, teleport: &[f64]) -> 
     //    (indice : `pi.iter().zip(&t.dangling).filter(...).map(...).sum()`) ;
     // 3) `let jump = alpha * dangling_mass + 1.0 - alpha;`
     //    puis `next[j] += jump * teleport[j]` pour tout j.
-    todo!()
+    let mut next = t.p.vec_mul(pi);
+    for x in &mut next {
+        *x *= alpha;
+    }
+    let dangling_mass: f64 = pi
+        .iter()
+        .zip(&t.dangling)
+        .filter(|&(_, &b)| b)
+        .map(|(&e, _)| e)
+        .sum();
+    let jump = alpha * dangling_mass + 1.0 - alpha;
+    for (x, &tp) in next.iter_mut().zip(teleport) {
+        *x += jump * tp;
+    }
+    next
 }
 
 /// Paramètres de l'itération.
@@ -213,7 +260,62 @@ pub fn pagerank_from(
     // - alpha valide : `(0.0..=1.0).contains(&opts.alpha)` (faux aussi pour NaN) ;
     // - distribution : `markov::is_distribution` existe déjà (phase 1) ;
     // - si max_iter == 0 : renvoyer `start` avec iterations 0, residual INFINITY, converged false.
-    todo!()
+    if t.n() == 0 {
+        return Err(PageRankError::EmptyGraph);
+    }
+
+    if !(0.0..=1.0).contains(&opts.alpha) {
+        return Err(PageRankError::InvalidAlpha(opts.alpha));
+    }
+
+    if start.len() != t.n() {
+        return Err(PageRankError::SizeMismatch {
+            what: "start",
+            expected: t.n(),
+            found: start.len(),
+        });
+    }
+
+    if teleport.len() != t.n() {
+        return Err(PageRankError::SizeMismatch {
+            what: "teleport",
+            expected: t.n(),
+            found: teleport.len(),
+        });
+    }
+
+    if !markov::is_distribution(start) {
+        return Err(PageRankError::NotDistribution("start"));
+    }
+
+    if !markov::is_distribution(teleport) {
+        return Err(PageRankError::NotDistribution("teleport"));
+    }
+
+    let mut iterations: usize = 0;
+
+    let mut pi: Vec<f64> = start.to_vec();
+    let mut residual = f64::INFINITY;
+    for _ in 0..opts.max_iter {
+        let next = google_step(&pi, t, opts.alpha, teleport);
+        iterations += 1;
+        residual = l1_distance(&next, &pi);
+        if residual < opts.epsilon {
+            return Ok(PageRank {
+                scores: next,
+                iterations,
+                residual,
+                converged: true,
+            });
+        }
+        pi = next;
+    }
+    Ok(PageRank {
+        scores: pi,
+        iterations,
+        residual,
+        converged: false,
+    })
 }
 
 #[cfg(test)]

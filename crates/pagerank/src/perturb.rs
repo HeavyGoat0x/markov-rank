@@ -28,14 +28,24 @@ pub struct Graph {
 }
 
 impl Graph {
-    /// Lit un fichier `.mtx` : chaque entrée `(i, j)` devient un lien `i → j` (valeur ignorée).
+    /// Lit un fichier `.mtx` ou `.txt` (liste d'adjacence, voir [`mtx::read_graph_file`]) :
+    /// chaque entrée `(i, j)` devient un lien `i → j` (valeur ignorée).
     ///
     /// # Errors
     /// Erreur de lecture, ou [`PageRankError::NotSquare`] si la matrice n'est pas carrée.
     pub fn from_mtx_file<P: AsRef<Path>>(path: P) -> Result<Self, PageRankError> {
         // `mtx::read_file(path)?`, vérifier rows == cols, puis garder (i, j) de chaque entrée
         // (indice : `.into_iter().map(|(i, j, _)| (i, j)).collect()`).
-        todo!()
+        let coo = mtx::read_graph_file(path)?;
+        let rows = coo.rows;
+        let cols = coo.cols;
+
+        if rows != cols {
+            return Err(PageRankError::NotSquare { rows, cols });
+        }
+        let links: Vec<(usize, usize)> = coo.entries.into_iter().map(|(x, y, _)| (x, y)).collect();
+
+        Ok(Graph { n: rows, links })
     }
 
     /// Matrice de transition (chaque lien a le poids 1).
@@ -45,7 +55,11 @@ impl Graph {
     pub fn transition(&self) -> Result<Transition, PageRankError> {
         // Construire les triplets (i, j, 1.0), `CsrMatrix::from_triplets(self.n, self.n, …)?`,
         // puis `Transition::from_adjacency(&…)`.
-        todo!()
+
+        let triplets: Vec<(usize, usize, f64)> =
+            self.links.iter().map(|&(x, y)| (x, y, 1.0)).collect();
+        let csr_matrix = CsrMatrix::from_triplets(self.n, self.n, triplets)?;
+        Transition::from_adjacency(&csr_matrix)
     }
 }
 
@@ -55,7 +69,16 @@ pub fn remove_random_links<R: Rng + ?Sized>(g: &Graph, count: usize, rng: &mut R
     // Indice : copier les liens, les mélanger (`links.shuffle(rng)`, trait `SliceRandom`),
     // puis `truncate` pour garder `len - count` liens (attention : `count` peut dépasser `len`,
     // regarde `usize::saturating_sub`).
-    todo!()
+    let mut link_copie = g.links.clone();
+    link_copie.shuffle(rng);
+    let keep = link_copie.len().saturating_sub(count);
+
+    link_copie.truncate(keep);
+
+    Graph {
+        n: g.n,
+        links: link_copie,
+    }
 }
 
 /// Ajoute `count` liens tirés au hasard : jamais de boucle (`i → i`), jamais un lien qui
@@ -71,7 +94,35 @@ pub fn add_random_links<R: Rng + ?Sized>(g: &Graph, count: usize, rng: &mut R) -
     //    « liens » (le test le vérifie), par ex. `assert!(…, "pas assez de liens possibles")` ;
     // 3) tant qu'on n'a pas ajouté `count` liens : tirer i et j avec `rng.random_range(0..n)` ;
     //    si i != j et `seen.insert((i, j))` renvoie true (lien nouveau), le garder.
-    todo!()
+    let mut seen: HashSet<(usize, usize)> = g.links.iter().copied().collect();
+    let n = g.n;
+
+    // Vérification unique, avant de tirer : on ne compte que les liens sans boucle déjà
+    // présents (un fichier .mtx peut contenir des boucles i → i), et `saturating_sub`
+    // évite le dépassement de `n - 1` quand n == 0.
+    let existing = seen.iter().filter(|&&(i, j)| i != j).count();
+    let free = (n * n.saturating_sub(1)).saturating_sub(existing);
+    assert!(
+        count <= free,
+        "pas assez de liens possibles : {count} demandés, {free} libres"
+    );
+
+    // On part des liens existants (même ordre) et on ajoute à la fin : le résultat ne dépend
+    // que de la graine. `seen` ne sert qu'à détecter les doublons (l'ordre d'un HashSet
+    // change d'une exécution à l'autre).
+    let mut links = g.links.clone();
+    for _ in 0..count {
+        loop {
+            let i = rng.random_range(0..n);
+            let j = rng.random_range(0..n);
+            if i != j && seen.insert((i, j)) {
+                links.push((i, j));
+                break;
+            }
+        }
+    }
+
+    Graph { n, links }
 }
 
 /// Ajoute `count` nouvelles pages, numérotées `n, n+1, …`. Chacune reçoit `links_per_node`
@@ -89,7 +140,24 @@ pub fn add_random_nodes<R: Rng + ?Sized>(
 ) -> Graph {
     // Indice : `rand::seq::index::sample(rng, g.n, links_per_node)` tire `links_per_node`
     // indices DISTINCTS dans 0..g.n ; `.iter()` les parcourt.
-    todo!()
+
+    let mut links: Vec<(usize, usize)> = g.links.clone();
+    let n = g.n;
+    // Les nouvelles pages sont numérotées après les anciennes : n, n + 1, …
+    // `index` est toujours une page existante (0..n), on ne le décale jamais.
+    for node in n..n + count {
+        for index in rand::seq::index::sample(rng, n, links_per_node) {
+            links.push((node, index));
+        }
+        for index in rand::seq::index::sample(rng, n, links_per_node) {
+            links.push((index, node));
+        }
+    }
+
+    Graph {
+        n: n + count,
+        links,
+    }
 }
 
 /// Étend une distribution de `pi.len()` pages à `new_n` pages, pour un warm start après
@@ -99,8 +167,19 @@ pub fn add_random_nodes<R: Rng + ?Sized>(
 /// # Panics
 /// Si `new_n < pi.len()`, avec un message contenant « réduire » (le test le vérifie).
 #[must_use]
+#[allow(clippy::cast_precision_loss)]
 pub fn extend_distribution(pi: &[f64], new_n: usize) -> Vec<f64> {
-    todo!()
+    let old_n = pi.len();
+    assert!(
+        new_n >= old_n,
+        "impossible de réduire une distribution de {old_n} à {new_n} pages"
+    );
+
+    let scale = old_n as f64 / new_n as f64;
+    let mut result: Vec<f64> = pi.iter().map(|&e| e * scale).collect();
+    // `resize` complète jusqu'à `new_n` éléments avec la valeur donnée.
+    result.resize(new_n, 1.0 / new_n as f64);
+    result
 }
 
 /// Nombre d'itérations pour recalculer PageRank après modification.
@@ -129,7 +208,25 @@ pub fn compare_starts(
     // 2) `after.transition()?` puis `pagerank(…)` → itérations depuis l'uniforme ;
     // 3) `extend_distribution(&ancien.scores, after.n)` puis
     //    `pagerank_from(&t_after, opts, &warm, &uniform(after.n))` → itérations warm.
-    todo!()
+    // Vérifié avant les deux calculs de PageRank (coûteux), pas après.
+    assert!(
+        after.n >= before.n,
+        "`after` a {} pages, moins que `before` ({}) : impossible de réduire la distribution",
+        after.n,
+        before.n
+    );
+
+    let old = pagerank(&before.transition()?, opts)?;
+    let t_after = after.transition()?;
+    let uniform_iterations = pagerank(&t_after, opts)?.iterations;
+
+    let warm_start = extend_distribution(&old.scores, after.n);
+    let warm_iterations = pagerank_from(&t_after, opts, &warm_start, &uniform(after.n))?.iterations;
+
+    Ok(Comparison {
+        uniform_iterations,
+        warm_iterations,
+    })
 }
 
 #[cfg(test)]
