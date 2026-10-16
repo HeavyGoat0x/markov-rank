@@ -11,7 +11,12 @@ pub fn top_k(scores: &[f64], k: usize) -> Vec<(usize, f64)> {
     // `total_cmp` compare des f64 (même NaN) ; `then` départage les égalités.
     // Bonus phase 5 : pour 1 million de pages et k = 10, trier tout est du gâchis
     // (`select_nth_unstable_by` fait mieux).
-    todo!()
+    let mut pages: Vec<(usize, f64)> = scores.iter().copied().enumerate().collect();
+
+    pages.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    pages.truncate(k);
+    pages
 }
 
 #[cfg(test)]
