@@ -15,6 +15,9 @@
 //!
 //! Coût O(nnz) par itération grâce à [`CsrMatrix::vec_mul`].
 
+pub mod perturb; // phase 4 : modifications du graphe et expérience du TD 2
+pub mod ranking; // phase 4 : meilleures pages
+
 use std::path::Path;
 
 use markov::{CsrMatrix, MatrixError};
@@ -101,15 +104,16 @@ impl Transition {
     }
 
     /// Lit un fichier `.mtx` où l'entrée `(i, j)` est un lien de la page `i` vers la page `j`
-    /// (convention des graphes web SNAP de <https://sparse.tamu.edu>).
+    /// (convention des graphes web SNAP de <https://sparse.tamu.edu>), ou un fichier `.txt`
+    /// au format liste d'adjacence du TD (voir [`mtx::read_graph_file`]).
     ///
     /// # Errors
     /// Erreurs de lecture ([`PageRankError::Mtx`]), puis celles de [`Transition::from_adjacency`].
     pub fn from_mtx_file<P: AsRef<Path>>(path: P) -> Result<Self, PageRankError> {
-        // Trois lignes, un `?` chacune : `mtx::read_file`, `CsrMatrix::from_triplets`
+        // Trois lignes, un `?` chacune : `mtx::read_graph_file`, `CsrMatrix::from_triplets`
         // (avec `coo.rows`, `coo.cols`, `coo.entries`), puis `Self::from_adjacency`.
         // Les `?` convertissent `MtxError` et `MatrixError` automatiquement (`#[from]`).
-        let coo = mtx::read_file(path)?;
+        let coo = mtx::read_graph_file(path)?;
         let adjacency: CsrMatrix = CsrMatrix::from_triplets(coo.rows, coo.cols, coo.entries)?;
 
         Transition::from_adjacency(&adjacency)

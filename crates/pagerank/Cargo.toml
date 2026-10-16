@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 markov = { path = "../markov" }
 mtx = { path = "../mtx" }
+rand = "0.10.3"
 thiserror = "2.0.21"
 
 [lints]
