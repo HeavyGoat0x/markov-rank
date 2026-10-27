@@ -6,7 +6,7 @@
 use markov::CsrMatrix;
 use rayon::prelude::*;
 
-use crate::{Options, PageRank, PageRankError, Transition, uniform};
+use crate::{Options, PageRank, PageRankError, Transition, check_inputs, power_iteration, uniform};
 
 /// Transition préparée pour le gather : on stocke `Pᵀ` (calculée une seule fois) au lieu de `P`.
 #[derive(Debug, Clone, PartialEq)]
@@ -20,7 +20,12 @@ pub struct TransposedTransition {
 impl From<&Transition> for TransposedTransition {
     /// `From` est le trait standard de conversion : il donne aussi `t.into()` gratuitement.
     fn from(t: &Transition) -> Self {
-        todo!()
+        let pt = t.p.transpose();
+
+        TransposedTransition {
+            pt,
+            dangling: t.dangling.clone(),
+        }
     }
 }
 
@@ -38,19 +43,55 @@ pub fn google_step_parallel(
 ) -> Vec<f64> {
     // Indices rayon : `pi.par_iter().zip(&tt.dangling)` existe ; pour modifier `next` en
     // parallèle : `next.par_iter_mut().zip(teleport).for_each(|(x, &v)| …)`.
-    todo!()
+    let mut next = tt.pt.par_mul_vec(pi);
+
+    next.par_iter_mut().for_each(|e| *e *= alpha);
+
+    let dangling_mass: f64 = pi
+        .par_iter()
+        .zip(&tt.dangling)
+        .filter(|&(_, &b)| b)
+        .map(|(&e, _)| e)
+        .sum();
+    let jump = alpha * dangling_mass + 1.0 - alpha;
+    next.par_iter_mut()
+        .zip(teleport)
+        .for_each(|(x, tp)| *x += *tp * jump);
+
+    next
 }
 
 /// PageRank (départ et téléportation uniformes) calculé avec [`google_step_parallel`].
 ///
-/// Mêmes erreurs et même boucle que [`crate::pagerank_from`]. Bonne occasion de refactoriser :
-/// extraire la boucle de `pagerank_from` dans une fonction privée qui reçoit le pas sous forme
-/// de closure (`impl Fn(&[f64]) -> Vec<f64>`), et l'appeler depuis les deux versions.
+/// Même rôle que [`crate::pagerank`] : appelle [`pagerank_parallel_from`] avec la distribution
+/// uniforme comme départ et comme téléportation.
 ///
 /// # Errors
 /// Voir [`crate::pagerank_from`].
 pub fn pagerank_parallel(t: &Transition, opts: &Options) -> Result<PageRank, PageRankError> {
-    todo!()
+    let start = uniform(t.n());
+    pagerank_parallel_from(t, opts, &start, &start)
+}
+
+/// Version parallèle de [`crate::pagerank_from`] : départ et téléportation choisis (warm start,
+/// PageRank personnalisé), mêmes vérifications, même boucle, pas calculé avec
+/// [`google_step_parallel`].
+///
+/// # Errors
+/// Voir [`crate::pagerank_from`] (mêmes erreurs, dans le même ordre).
+pub fn pagerank_parallel_from(
+    t: &Transition,
+    opts: &Options,
+    start: &[f64],
+    teleport: &[f64],
+) -> Result<PageRank, PageRankError> {
+    check_inputs(t, opts, start, teleport)?;
+    // Transposée calculée UNE fois, hors de la boucle : la refaire à chaque pas coûterait
+    // plus cher que tout ce que le parallélisme fait gagner.
+    let tt = TransposedTransition::from(t);
+    Ok(power_iteration(start, opts, |pi| {
+        google_step_parallel(pi, &tt, opts.alpha, teleport)
+    }))
 }
 
 /// Même résultat que [`crate::ranking::top_k`] (même ordre, mêmes égalités), sans trier toutes
@@ -58,9 +99,24 @@ pub fn pagerank_parallel(t: &Transition, opts: &Options) -> Result<PageRank, Pag
 /// que ces k-là : O(n + k log k) au lieu de O(n log n).
 #[must_use]
 pub fn top_k_fast(scores: &[f64], k: usize) -> Vec<(usize, f64)> {
-    // Attention aux cas k == 0 et k >= n (select_nth_unstable_by(k - 1) n'a de sens que pour
-    // 1 <= k <= n).
-    todo!()
+    let mut pages: Vec<(usize, f64)> = scores.iter().copied().enumerate().collect();
+
+    // `select_nth_unstable_by(k - 1)` n'a de sens que pour 1 <= k <= n : on ramène k dans
+    // 0..=n, et k == 0 (sinon `k - 1` déborde sur un usize) donne un résultat vide.
+    let k = k.min(pages.len());
+    if k == 0 {
+        return Vec::new();
+    }
+
+    // Même ordre que `top_k` : score décroissant, puis indice croissant en cas d'égalité.
+    // Les indices sont tous différents : l'ordre est total, donc « unstable » ne change rien.
+    let order = |a: &(usize, f64), b: &(usize, f64)| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0));
+
+    // Place en tête les k meilleures (dans le désordre), en O(n) ; puis on ne trie qu'elles.
+    pages.select_nth_unstable_by(k - 1, order);
+    pages.truncate(k);
+    pages.sort_unstable_by(order);
+    pages
 }
 
 #[cfg(test)]
@@ -152,5 +208,30 @@ mod tests {
             assert_eq!(top_k_fast(&scores, k), top_k(&scores, k), "k = {k}");
         }
         assert_eq!(top_k_fast(&[], 3), vec![]);
+    }
+
+    #[test]
+    fn parallel_from_matches_sequential_from() {
+        let t = web(2000);
+        let opts = Options::default();
+        // Téléportation concentrée sur les pages 0 à 9 (PageRank personnalisé).
+        let mut teleport = vec![0.0; 2000];
+        for x in &mut teleport[..10] {
+            *x = 0.1;
+        }
+        // Départ = ancien PageRank (warm start).
+        let start = pagerank(&t, &opts).unwrap().scores;
+
+        let seq = crate::pagerank_from(&t, &opts, &start, &teleport).unwrap();
+        let par = pagerank_parallel_from(&t, &opts, &start, &teleport).unwrap();
+        assert!(par.converged);
+        assert_close(&par.scores, &seq.scores, 1e-9);
+        assert!(par.iterations.abs_diff(seq.iterations) <= 1);
+
+        // Les mêmes erreurs que la version séquentielle.
+        assert!(matches!(
+            pagerank_parallel_from(&t, &opts, &start[..10], &teleport),
+            Err(PageRankError::SizeMismatch { what: "start", .. })
+        ));
     }
 }

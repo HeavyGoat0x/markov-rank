@@ -22,25 +22,45 @@ impl CsrMatrix {
     /// Produit matrice × vecteur colonne : `(A · x)[i] = Σⱼ A[i][j] · x[j]`.
     ///
     /// # Panics
-    /// Si `x.len() != n_cols`.
+    /// Si `x.len() != n_cols` : `x` doit avoir une valeur par **colonne** de la matrice
+    /// (à l'inverse de [`CsrMatrix::vec_mul`], qui en veut une par ligne).
     #[must_use]
     pub fn mul_vec(&self, x: &[f64]) -> Vec<f64> {
         // Une ligne = une case du résultat :
         // `(0..self.n_rows()).map(|i| self.row(i).map(|(j, v)| v * x[j]).sum()).collect()`
         // (sans oublier le `assert_eq!` sur la taille de x).
-        todo!()
+        // Vérifié avant la boucle : sinon `x[j]` paniquerait plus loin avec un message
+        // « index out of bounds » qui ne dit pas d'où vient l'erreur.
+        assert_eq!(
+            x.len(),
+            self.n_cols(),
+            "A · x : x doit avoir une valeur par colonne de la matrice"
+        );
+
+        (0..self.n_rows())
+            .map(|i| self.row(i).map(|(j, v)| v * x[j]).sum())
+            .collect()
     }
 
     /// Même calcul que [`CsrMatrix::mul_vec`], réparti sur tous les cœurs.
     ///
     /// # Panics
-    /// Si `x.len() != n_cols`.
+    /// Comme [`CsrMatrix::mul_vec`] : si `x.len() != n_cols`.
     #[must_use]
     pub fn par_mul_vec(&self, x: &[f64]) -> Vec<f64> {
         // Avec `rayon`, il suffit souvent de remplacer `(0..n)` par `(0..n).into_par_iter()` :
         // rayon découpe la plage en morceaux et les donne à ses threads. Le compilateur vérifie
         // que c'est sûr (`CsrMatrix` et `&[f64]` sont `Sync` : lisibles depuis plusieurs threads).
-        todo!()
+        // Vérifié dans le thread appelant, avant de lancer les threads de rayon.
+        assert_eq!(
+            x.len(),
+            self.n_cols(),
+            "A · x : x doit avoir une valeur par colonne de la matrice"
+        );
+        (0..self.n_rows())
+            .into_par_iter()
+            .map(|i| self.row(i).map(|(j, v)| v * x[j]).sum())
+            .collect()
     }
 }
 
