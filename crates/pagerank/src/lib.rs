@@ -15,6 +15,7 @@
 //!
 //! Coût O(nnz) par itération grâce à [`CsrMatrix::vec_mul`].
 
+pub mod fast; // phase 5 : PageRank parallèle, top-k rapide
 pub mod perturb; // phase 4 : modifications du graphe et expérience du TD 2
 pub mod ranking; // phase 4 : meilleures pages
 
@@ -234,6 +235,38 @@ pub fn pagerank(t: &Transition, opts: &Options) -> Result<PageRank, PageRankErro
     pagerank_from(t, opts, &start, &start)
 }
 
+/// Boucle de convergence commune aux versions séquentielle et parallèle.
+///
+/// `step` calcule `π·G` à partir de `π` : c'est une closure qui capture la transition,
+/// `alpha` et la téléportation, donc la boucle n'a besoin que de `start` et des critères
+/// d'arrêt. Les entrées doivent avoir été vérifiées avant (voir [`check_inputs`]).
+fn power_iteration(start: &[f64], opts: &Options, step: impl Fn(&[f64]) -> Vec<f64>) -> PageRank {
+    let mut iterations: usize = 0;
+
+    let mut pi: Vec<f64> = start.to_vec();
+    let mut residual = f64::INFINITY;
+    for _ in 0..opts.max_iter {
+        let next = step(&pi);
+        iterations += 1;
+        residual = l1_distance(&next, &pi);
+        if residual < opts.epsilon {
+            return PageRank {
+                scores: next,
+                iterations,
+                residual,
+                converged: true,
+            };
+        }
+        pi = next;
+    }
+    PageRank {
+        scores: pi,
+        iterations,
+        residual,
+        converged: false,
+    }
+}
+
 /// PageRank avec un point de départ et une téléportation choisis.
 ///
 /// - `start` : distribution initiale π(0). Partir de l'ancien PageRank après une petite
@@ -255,14 +288,27 @@ pub fn pagerank_from(
     start: &[f64],
     teleport: &[f64],
 ) -> Result<PageRank, PageRankError> {
-    // Indices :
-    // - alpha valide : `(0.0..=1.0).contains(&opts.alpha)` (faux aussi pour NaN) ;
-    // - distribution : `markov::is_distribution` existe déjà (phase 1) ;
-    // - si max_iter == 0 : renvoyer `start` avec iterations 0, residual INFINITY, converged false.
+    check_inputs(t, opts, start, teleport)?;
+    Ok(power_iteration(start, opts, |pi| {
+        google_step(pi, t, opts.alpha, teleport)
+    }))
+}
+
+/// Vérifications communes à [`pagerank_from`] et [`fast::pagerank_parallel_from`].
+///
+/// # Errors
+/// Celles de [`pagerank_from`], dans le même ordre.
+fn check_inputs(
+    t: &Transition,
+    opts: &Options,
+    start: &[f64],
+    teleport: &[f64],
+) -> Result<(), PageRankError> {
     if t.n() == 0 {
         return Err(PageRankError::EmptyGraph);
     }
 
+    // `contains` est faux aussi pour NaN : un alpha NaN est donc refusé.
     if !(0.0..=1.0).contains(&opts.alpha) {
         return Err(PageRankError::InvalidAlpha(opts.alpha));
     }
@@ -290,31 +336,7 @@ pub fn pagerank_from(
     if !markov::is_distribution(teleport) {
         return Err(PageRankError::NotDistribution("teleport"));
     }
-
-    let mut iterations: usize = 0;
-
-    let mut pi: Vec<f64> = start.to_vec();
-    let mut residual = f64::INFINITY;
-    for _ in 0..opts.max_iter {
-        let next = google_step(&pi, t, opts.alpha, teleport);
-        iterations += 1;
-        residual = l1_distance(&next, &pi);
-        if residual < opts.epsilon {
-            return Ok(PageRank {
-                scores: next,
-                iterations,
-                residual,
-                converged: true,
-            });
-        }
-        pi = next;
-    }
-    Ok(PageRank {
-        scores: pi,
-        iterations,
-        residual,
-        converged: false,
-    })
+    Ok(())
 }
 
 #[cfg(test)]
